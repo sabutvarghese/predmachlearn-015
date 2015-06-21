@@ -1,0 +1,155 @@
+---
+title: "Practical Machine Learning - Project"
+author: "Sabu Varghese"
+date: "Wednesday, June 03, 2015"
+output: html_document
+---
+#BACKGROUND
+Sport watches are gaining popularity. These watches are wearable accelerometers that measures physical activity performed by the wearer. However, these are mere measurements does not quantify how well those activities are performed.
+
+The goal of this project is to use data from accelerometers and predict how well certain activities are performed. This is the "classe" variable in the training data set; this variable is not provided with the testing data set. The data is collected from accelerometers on the belt, forearm, arm, and dumbell of six participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+# Prediction Design Steps:
+* Define your error rate
+* Split data into training, testing, validation (optional)
+* On the training set, pick features  use cross-validation
+* On the training set pick prediction function use cross-validation
+* If no validation, apply 1x to test set
+* If validation, apply to test set and refine and apply 1x to validation
+
+#PROJECT TASKS
+##Prepare data set
+Prior to the data analysis, inspect the data for data-entry errors, missing values, Outliers, Unusual (e.g. asymmetric) distributions, Changes in variability, Clustering, Non-linear bivariate relationships and Unexpected patterns.
+
+The training data is downloaded from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv and test data is downloaded from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv. Upon analysis, it was found that Variable "problem_id" does not exist in the training dataset. Also, the classe variable is available in the training dataset but not in the testing dataset.
+
+The training dataset will be used to build the model. And then the model will be applied to the testing dataset.
+
+As a part of preparing data, certain columns that does not provide incremental value for analysis is removed from the training. Here is the list of variables that were removed:
+* X
+* user_name
+* raw_timestamp_part_1
+* raw_timestamp_part_2
+* cvtd_timestamp
+* new_window
+* num_window
+
+Also missing values were discarded and pre-processing transformation (centering, scalaing) was applied. Prediction using regression was applied on the pre-processed data and zeros or near to zero values were removed. These transformations were applied to both testing and training datasets. The resulting datasets were used for further analysis.
+
+```{r, echo=FALSE}
+#Include required libraries
+library(caret)
+library(ggplot2)
+library(reshape2)
+
+library(parallel)
+library(doParallel)
+
+setwd("C:/Users/varghese/Coursera/predmachlearn")
+```
+
+```{r}
+pmlTrain <- read.csv("C:/Users/varghese/Coursera/predmachlearn/pml-training.csv", header=TRUE, sep=",")
+pmlTest <- read.csv("C:/Users/varghese/Coursera/predmachlearn/pml-testing.csv", header=TRUE, sep=",")
+
+#Exclude columns that do not provide any incremental value for analysis
+ExcludeCols <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")
+pmlTrain <- pmlTrain[, !names(pmlTrain) %in% ExcludeCols]
+
+#Discard variables with missing values
+naIndex <- sapply(pmlTrain, function(x) { any(is.na(x) | x =="") })
+pmlTrain <- pmlTrain[, !naIndex]
+
+preProcRslts <- preProcess(pmlTrain[, !names(pmlTrain) %in% c("classe")], method=c('knnImpute', 'center', 'scale'))
+pmlTrain_pv <- predict(preProcRslts, pmlTrain[, !names(pmlTrain) %in% c("classe")])
+
+#Remove zero and near-zero value variables, if exists
+nzvTrain <- nearZeroVar(pmlTrain_pv, saveMetrics=TRUE)
+pmlTrain_pv <- pmlTrain_pv[,nzvTrain$nzv==FALSE]
+
+#Add classe variable back 
+pmlTrain_pv$classe <- pmlTrain$classe
+```
+
+Prepared dataset has the following dimension:
+```{r}
+dim(pmlTrain_pv)
+```
+
+##Build Model
+Before building the the model, the dataset is divided into two parts using createDataPartition function - one part will be used to create the model and the other part will be used for cross validation. The random forest algorithm is used for classification and regression since this method works well with large number of variables. The resuling modelFit is shown below:
+```{r}
+
+#Cross Validation
+#Divide training set into two parts - one for training and the other for cross validation
+set.seed(1234)
+
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+ctrl <- trainControl(classProbs=TRUE, savePredictions=TRUE, allowParallel=TRUE)
+
+partIndex <- createDataPartition(pmlTrain_pv$classe, p=0.75, list=FALSE)
+
+trainingCV <- pmlTrain_pv[partIndex,]
+testingCV <- pmlTrain_pv[-partIndex,]
+
+#Train model with random forest; results from cross validation is used as train control method.
+modelFit <- train(trainingCV$classe ~., method="rf", data=trainingCV, trControl=trainControl(method='cv'), number=5, allowParallel=TRUE )
+
+modelFit
+```
+
+##Evaluate the Model using Cross Validation
+The model was developed using the 75% of the initial dataset. This model can now be used to create confusion matrix and compare the accuracy of prediction.
+
+```{r}
+# Evaluate the model with the training dataset
+trainingPred <- predict(modelFit, trainingCV)
+confusionMatrix(trainingPred, trainingCV$classe)
+
+# Evaluate the model with the testing data set
+testingPred <- predict(modelFit, testingCV)
+confusionMatrix(testingPred, testingCV$classe)
+
+```
+As you can see, the Accuracy is 1 when the model is used to predict the trainingCV as expected. When the model is used to predict the testingCV dataset, there is a high level of Accuracy (0.9908).
+
+##Assess sample error
+```{r}
+varImp(modelFit)
+plot(varImp(modelFit))
+modelFit$finalModel
+```
+
+The sample error for the model is very low (less than 1%). This is error rate is acceptable in this setting.
+
+
+##Save final model
+```{r, echo=FALSE}
+save(modelFit, file="C:/Users/varghese/Coursera/predmachlearn/modelFit.RData")
+load(file="pmlModelFit.RData", verbose=TRUE)
+
+```
+Save the final model locally for future use. The model is evaluated with a very low error rate. This can now be used to predict how well the activities are performed by the wearer.
+
+##Apply model 
+Apply the finalized model to the testing dataset:
+```{r}
+pml_write_files <- function(x) {
+    n = length(x)
+    for(i in 1:n) {
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+
+predResults <- predict(modelFit, pmlTest)
+predResults
+pml_write_files(predResults)
+
+```
+
+#SUMMARY
+The prediction model developed using random forest is reliable and has very low error rate. This model was successfully applied to the testing dataset and results uploaded.
+
